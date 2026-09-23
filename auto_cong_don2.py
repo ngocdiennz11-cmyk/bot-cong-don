@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Hệ thống ĐẾM SỐ LẦN XUẤT HIỆN qua Telegram Bot + Web Admin.
-Chỉ đếm các tài khoản đã được khai báo trước trong DB.
-Chia nhóm: Diễn, Hiếu.
+Hệ thống QUẢN LÝ ĐIỂM + ĐẾM LƯỢT qua Telegram Bot + Web Admin.
+Đặc điểm:
+- Có chia Quỹ (Diễn, Hiếu, Chung) như bản cũ.
+- Cộng điểm + Đếm số lượt xuất hiện.
+- CHỈ đọc những tài khoản đã được Thêm thủ công trên Web (Whitelist).
 """
 
 import re
@@ -26,13 +28,17 @@ WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "123456")
 FLASK_SECRET = os.environ.get("FLASK_SECRET", "ngocdien_sieu_cap_bao_mat")
 ADMIN_URL = os.environ.get("ADMIN_URL", "Web Admin")
 
-MAIN_DOC_ID = "dem_so_main"
+MAIN_DOC_ID = "main_data"
 
 DEFAULT_DOC = {
+    "diem": {},
+    "so_luot": {},       # Đếm số lần xuất hiện
+    "app_names": {},     # Tên trang (ví dụ: sc88)
     "tong_he_thong": 0,
-    "tong_dien": 0,
-    "tong_hieu": 0,
-    "danh_sach_nick": {} # Cấu trúc: {"ten_nick": {"nhom": "dien/hieu", "dem": 0}}
+    "dien": 0,
+    "hieu": 0,
+    "quan_ly": {},
+    "trang_thai": {},
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -45,7 +51,7 @@ collection = None
 try:
     if MONGO_URL:
         db_client = MongoClient(MONGO_URL, tlsCAFile=certifi.where(), tlsAllowInvalidCertificates=True)
-        collection = db_client["telegram_bot"]["dem_so_db"]
+        collection = db_client["telegram_bot"]["diem_so_v2"]
         log.info("✅ Đã kết nối MongoDB thành công!")
     else:
         log.error("❌ Chưa cấu hình MONGO_URL")
@@ -58,10 +64,14 @@ def doc_data():
         return {"_id": MAIN_DOC_ID, **DEFAULT_DOC}
     return {
         "_id": MAIN_DOC_ID,
+        "diem": doc.get("diem", {}),
+        "so_luot": doc.get("so_luot", {}),
+        "app_names": doc.get("app_names", {}),
         "tong_he_thong": doc.get("tong_he_thong", 0),
-        "tong_dien": doc.get("tong_dien", 0),
-        "tong_hieu": doc.get("tong_hieu", 0),
-        "danh_sach_nick": doc.get("danh_sach_nick", {})
+        "dien": doc.get("dien", 0),
+        "hieu": doc.get("hieu", 0),
+        "quan_ly": doc.get("quan_ly", {}),
+        "trang_thai": doc.get("trang_thai", {}),
     }
 
 def luu_data(data):
@@ -76,83 +86,175 @@ app = Flask(__name__)
 app.secret_key = FLASK_SECRET
 
 BASE_STYLE = """
-:root{ --bg:#f5f7fb; --card:#ffffff; --primary:#4f6bf6; --green:#16a34a; --red:#e0384a; }
-body{ background:var(--bg); font-family:sans-serif; margin:0; padding:20px; color:#333; }
-.wrap{ max-width:900px; margin:0 auto; }
-.card{ background:var(--card); padding:20px; border-radius:10px; box-shadow:0 4px 6px rgba(0,0,0,0.05); margin-bottom:20px; }
-.stats{ display:flex; gap:20px; margin-bottom:20px; flex-wrap: wrap; }
-.stat-box{ flex:1; min-width: 200px; padding:20px; border-radius:10px; color:#fff; text-align:center; font-weight:bold; }
-.b-tong{ background:#7c3aed; } .b-dien{ background:#0ea5e9; } .b-hieu{ background:#f43f5e; }
-table{ width:100%; border-collapse:collapse; margin-top:10px; font-size:15px; }
-th, td{ padding:12px; border-bottom:1px solid #eee; text-align:left; }
-button{ cursor:pointer; padding:8px 12px; border:none; border-radius:5px; background:var(--primary); color:#fff; font-weight:bold; }
-input, select{ padding:8px; border:1px solid #ccc; border-radius:5px; outline:none; }
-.flash{ background:#e8f8ee; color:var(--green); padding:10px; border-radius:5px; margin-bottom:15px; font-weight:bold; }
+:root{
+  --bg:#f5f7fb; --card:#ffffff; --ink:#1f2430; --muted:#6b7280;
+  --primary:#4f6bf6; --primary-dark:#3b52d1;
+  --green:#16a34a; --green-bg:#e8f8ee;
+  --red:#e0384a; --red-bg:#fdeceb;
+  --border:#e7e9f2; --radius:14px;
+}
+*{box-sizing:border-box;}
+body{ background:var(--bg); color:var(--ink); margin:0; font-family:sans-serif; }
+.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px;}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;}
+.logout{color:var(--muted);text-decoration:none;font-size:13px;font-weight:600;padding:8px 14px;border:1px solid var(--border);border-radius:10px;background:var(--card);}
+.logout:hover{background:var(--red-bg);color:var(--red);border-color:var(--red);}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:22px;}
+.stat{border-radius:var(--radius);padding:20px 22px;color:#fff;position:relative;}
+.stat small{opacity:.85;font-weight:600;font-size:12.5px;}
+.stat h2{margin:6px 0 0;font-size:28px;}
+.stat.total{background:linear-gradient(135deg,#4f6bf6,#7c3aed);}
+.stat.dien{background:linear-gradient(135deg,#0ea5e9,#0284c7);}
+.stat.hieu{background:linear-gradient(135deg,#f43f5e,#e11d48);}
+.stat-row{display:flex;align-items:flex-end;justify-content:space-between;gap:8px;}
+.stat-reset{background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);color:#fff;font-size:12px;padding:6px 11px;border-radius:8px;cursor:pointer;}
+.card{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);box-shadow:0 8px 24px rgba(30,40,90,.05);}
+.card-pad{padding:18px 20px;}
+.flash{padding:11px 16px;border-radius:10px;background:var(--green-bg);color:var(--green);font-weight:bold;font-size:14px;margin-bottom:16px;}
+.tabs{display:flex;gap:6px;padding:6px;background:#eef1f8;border-radius:12px;margin-bottom:18px;}
+.tabs a{flex:1;text-align:center;padding:10px 14px;border-radius:9px;font-weight:bold;font-size:14px;color:var(--muted);text-decoration:none;}
+.tabs a.active{background:#fff;color:var(--primary);box-shadow:0 2px 6px rgba(0,0,0,.08);}
+.toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+.search{padding:8px 14px;border:1px solid var(--border);border-radius:10px;font-size:13px;outline:none;}
+.search:focus{border-color:var(--primary);}
+.batch{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;}
+.batch button{border:none;border-radius:9px;padding:9px 14px;font-size:13px;font-weight:bold;cursor:pointer;color:#fff;}
+.b-dien{background:#0ea5e9;} .b-hieu{background:#f43f5e;} .b-chung{background:#94a3b8;} .b-reset{background:#f59e0b;} .b-xoa{background:var(--red);}
+table{width:100%;border-collapse:collapse;font-size:14px;}
+thead th{text-align:left;color:var(--muted);font-size:13px;padding:10px 12px;border-bottom:2px solid var(--border);}
+tbody td{padding:11px 12px;border-bottom:1px solid var(--border);}
+.tag-on{color:var(--green);font-weight:bold;font-size:13px;}
+.tag-off{color:var(--red);font-weight:bold;font-size:13px;}
+.badge{background:#eef1f8;color:#4b5570;font-size:12px;font-weight:bold;padding:4px 8px;border-radius:6px;}
+.score-cell{display:flex;gap:6px;align-items:center;}
+.score-cell input{width:80px;padding:7px;border:1px solid var(--border);border-radius:8px;}
+.save-btn{background:var(--primary);color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:bold;cursor:pointer;}
 """
 
-TEMPLATE = """
-<!DOCTYPE html>
-<html lang="vi"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Quản Lý Đếm Tên</title><style>{{style}}</style></head>
+PAGE_TEMPLATE = """
+<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><title>Quản Lý Điểm Số</title><style>{{ style }}</style></head>
 <body>
 <div class="wrap">
-    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; margin-bottom: 20px;">
-        <h2>📊 Hệ Thống Đếm Lượt Tài Khoản</h2>
-        <a href="{{url_for('logout')}}" style="color:var(--red); text-decoration:none; font-weight:bold;">Đăng xuất</a>
-    </div>
+  <div class="top"><h2>🚀 Quản Lý Tài Khoản Hệ Thống</h2><a class="logout" href="{{ url_for('logout') }}">Đăng xuất</a></div>
+  {% if get_flashed_messages() %}{% for m in get_flashed_messages() %}<div class="flash">✅ {{ m }}</div>{% endfor %}{% endif %}
 
-    {% if get_flashed_messages() %}
-      {% for m in get_flashed_messages() %}<div class="flash">✅ {{ m }}</div>{% endfor %}
-    {% endif %}
+  <div class="stats">
+    <div class="stat total"><small>🌍 TỔNG HỆ THỐNG</small><div class="stat-row"><h2>{{ data.tong_he_thong }} đ</h2>
+        <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset?');"><input type="hidden" name="field" value="tong"><input type="hidden" name="tab" value="{{ tab }}"><button class="stat-reset" type="submit">↺ Reset</button></form>
+    </div></div>
+    <div class="stat dien"><small>📘 QUỸ DIỄN</small><div class="stat-row"><h2>{{ data.dien }} đ</h2>
+        <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset?');"><input type="hidden" name="field" value="dien"><input type="hidden" name="tab" value="{{ tab }}"><button class="stat-reset" type="submit">↺ Reset</button></form>
+    </div></div>
+    <div class="stat hieu"><small>📕 QUỸ HIẾU</small><div class="stat-row"><h2>{{ data.hieu }} đ</h2>
+        <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset?');"><input type="hidden" name="field" value="hieu"><input type="hidden" name="tab" value="{{ tab }}"><button class="stat-reset" type="submit">↺ Reset</button></form>
+    </div></div>
+  </div>
 
-    <div class="stats">
-        <div class="stat-box b-tong">TỔNG HỆ THỐNG<br><h1 style="margin:10px 0 0 0;">{{data.tong_he_thong}}</h1></div>
-        <div class="stat-box b-dien">NHÓM DIỄN<br><h1 style="margin:10px 0 0 0;">{{data.tong_dien}}</h1></div>
-        <div class="stat-box b-hieu">NHÓM HIẾU<br><h1 style="margin:10px 0 0 0;">{{data.tong_hieu}}</h1></div>
-    </div>
+  <div class="tabs">
+    <a href="{{ url_for('index', tab='dien') }}" class="{{ 'active' if tab=='dien' else '' }}">Tab Diễn</a>
+    <a href="{{ url_for('index', tab='hieu') }}" class="{{ 'active' if tab=='hieu' else '' }}">Tab Hiếu</a>
+    <a href="{{ url_for('index', tab='chung') }}" class="{{ 'active' if tab=='chung' else '' }}">Danh Sách Chung</a>
+  </div>
 
-    <div class="card">
-        <h3>➕ Thêm tài khoản theo dõi</h3>
-        <form action="{{url_for('add_user')}}" method="POST" style="display:flex; gap:10px; flex-wrap:wrap;">
-            <input type="text" name="tk" placeholder="Nhập tên tài khoản..." required style="flex:1; min-width: 200px;">
-            <select name="nhom">
-                <option value="dien">Nhóm Diễn</option>
-                <option value="hieu">Nhóm Hiếu</option>
-            </select>
-            <button type="submit">Thêm ngay</button>
-        </form>
-    </div>
+  <!-- FORM THÊM TÀI KHOẢN MỚI -->
+  <div class="card card-pad" style="margin-bottom: 18px; border-left: 5px solid var(--primary);">
+    <h3 style="margin-top:0; margin-bottom:12px; font-size:16px;">➕ Khai báo tài khoản theo dõi</h3>
+    <form action="{{ url_for('add_acc') }}" method="POST" style="display:flex; gap:10px; flex-wrap:wrap;">
+        <input type="text" name="tk" placeholder="Nhập tên tài khoản (VD: anhba191)..." required class="search" style="flex:1;">
+        <select name="owner" class="search" style="width:180px;">
+            <option value="dien" {% if tab=='dien' %}selected{% endif %}>Thêm vào Quỹ Diễn</option>
+            <option value="hieu" {% if tab=='hieu' %}selected{% endif %}>Thêm vào Quỹ Hiếu</option>
+            <option value="chung" {% if tab=='chung' %}selected{% endif %}>Thêm vào Chung</option>
+        </select>
+        <button type="submit" class="save-btn" style="padding:0 20px;">Thêm vào DB</button>
+    </form>
+  </div>
 
-    <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
-            <h3>📋 Danh sách đang theo dõi</h3>
-            <form action="{{url_for('reset_all')}}" method="POST" onsubmit="return confirm('Reset toàn bộ số lượt đếm về 0?');">
-                <button type="submit" style="background:var(--red);">🔄 Reset Tất Cả Lượt Đếm Về 0</button>
-            </form>
-        </div>
-        <div style="overflow-x:auto;">
-            <table>
-                <tr><th>Tên tài khoản</th><th>Nhóm</th><th>Lượt đếm</th><th>Thao tác</th></tr>
-                {% for tk, info in data.danh_sach_nick.items() %}
-                <tr>
-                    <td><b>{{tk}}</b></td>
-                    <td><span style="background:#eef1f8; padding:4px 8px; border-radius:5px; font-size:13px; font-weight:bold;">{{ 'Diễn' if info.nhom == 'dien' else 'Hiếu' }}</span></td>
-                    <td style="font-size:18px; font-weight:bold; color:var(--primary);">{{info.dem}}</td>
-                    <td>
-                        <form action="{{url_for('delete_user')}}" method="POST" style="display:inline;" onsubmit="return confirm('Xóa {{tk}} khỏi danh sách?');">
-                            <input type="hidden" name="tk" value="{{tk}}">
-                            <button type="submit" style="background:var(--red); padding:6px 10px; font-size:12px;">Xóa</button>
-                        </form>
-                    </td>
-                </tr>
-                {% else %}
-                <tr><td colspan="4" style="text-align:center; color:#888;">Chưa có tài khoản nào được thêm.</td></tr>
-                {% endfor %}
-            </table>
-        </div>
-    </div>
+  <div class="card card-pad">
+    <div class="toolbar"><input class="search" id="searchBox" placeholder="🔎 Tìm kiếm tên nick..." onkeyup="filterSearch()" style="width:100%;"></div>
+    
+    <form action="{{ url_for('batch_action') }}" method="POST">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <div class="batch">
+        <button class="b-dien" type="submit" name="action_type" value="chuyen_dien">➡️ Chuyển Diễn</button>
+        <button class="b-hieu" type="submit" name="action_type" value="chuyen_hieu">➡️ Chuyển Hiếu</button>
+        <button class="b-chung" type="submit" name="action_type" value="chuyen_chung">↩️ Rút về Chung</button>
+        <button class="b-reset" type="submit" name="action_type" value="reset" onclick="return confirm('Reset điểm?');">🧹 Reset điểm</button>
+        <button class="b-xoa" type="submit" name="action_type" value="xoa" onclick="return confirm('Xóa vĩnh viễn?');">🗑️ Xóa</button>
+      </div>
+      <table id="accTable">
+        <thead>
+          <tr>
+            <th style="width:36px;"><input type="checkbox" onclick="toggleAll(this)"></th>
+            <th>Trạng thái</th><th>Tên tài khoản</th><th>App</th><th>Lượt</th><th>Điểm số</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for tk, diem, luot, app_name, status in rows %}
+          <tr>
+            <td><input type="checkbox" name="tks" value="{{ tk }}"></td>
+            <td>{% if status == 'khoa' %}<span class="tag-off">Bị khóa</span>{% else %}<span class="tag-on">Hoạt động</span>{% endif %}</td>
+            <td style="font-weight:bold;">{{ tk }}</td>
+            <td><span class="badge">{{ app_name }}</span></td>
+            <td style="color:var(--primary); font-weight:bold; font-size:16px;">{{ luot }}</td>
+            <td>
+              <div class="score-cell">
+                <input type="number" form="form_{{ tk }}" name="new_score" value="{{ diem }}">
+                <button class="save-btn" type="submit" form="form_{{ tk }}">Lưu</button>
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </form>
+
+    {% for tk, diem, luot, app_name, status in rows %}
+    <form id="form_{{ tk }}" action="{{ url_for('edit_score') }}" method="POST" style="display:none;">
+      <input type="hidden" name="tk" value="{{ tk }}"><input type="hidden" name="tab" value="{{ tab }}">
+    </form>
+    {% endfor %}
+  </div>
 </div>
+<script>
+function toggleAll(src){ document.querySelectorAll('input[name=tks]').forEach(cb => cb.checked = src.checked); }
+function filterSearch(){
+  const q = document.getElementById('searchBox').value.toLowerCase();
+  document.querySelectorAll('#accTable tbody tr').forEach(row => {
+    row.style.display = row.innerText.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+</script>
 </body></html>
 """
+
+def _fund_delta(data, tk, delta):
+    if delta <= 0: return
+    owner = data["quan_ly"].get(tk, "chung")
+    if owner == "dien": data["dien"] = data.get("dien", 0) + delta
+    elif owner == "hieu": data["hieu"] = data.get("hieu", 0) + delta
+
+def _set_owner(data, tk, new_owner):
+    old_owner = data["quan_ly"].get(tk, "chung")
+    if old_owner == new_owner: return
+    diem = data["diem"].get(tk, 0)
+    if old_owner == "dien": data["dien"] -= diem
+    elif old_owner == "hieu": data["hieu"] -= diem
+    if new_owner == "dien": data["dien"] += diem
+    elif new_owner == "hieu": data["hieu"] += diem
+    if new_owner == "chung": data["quan_ly"].pop(tk, None)
+    else: data["quan_ly"][tk] = new_owner
+
+def _rows_for_tab(data, owner_key):
+    items = []
+    for tk, diem in data["diem"].items():
+        if data["quan_ly"].get(tk, "chung") == owner_key:
+            luot = data.get("so_luot", {}).get(tk, 0)
+            app_name = data.get("app_names", {}).get(tk, "Chưa rõ")
+            status = data["trang_thai"].get(tk, "hoat_dong")
+            items.append((tk, diem, luot, app_name, status))
+    items.sort(key=lambda x: x[1], reverse=True)
+    return items
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -161,74 +263,88 @@ def index():
             if request.form.get("password") == WEB_PASSWORD:
                 session["logged_in"] = True
                 return redirect(url_for("index"))
-            return '<div style="color:red; text-align:center; margin-top:20px;">Sai mật khẩu!</div>' + login_form()
-        return login_form()
-    return render_template_string(TEMPLATE, data=doc_data(), style=BASE_STYLE)
+            return "Sai mật khẩu!"
+        return '<form method="POST" style="text-align:center;margin-top:50px;"><h3>Đăng nhập</h3><input type="password" name="password"><button>Vào</button></form>'
+    
+    tab = request.args.get("tab", "dien")
+    data = doc_data()
+    return render_template_string(PAGE_TEMPLATE, data=data, rows=_rows_for_tab(data, tab), tab=tab, style=BASE_STYLE)
 
-def login_form():
-    return '''
-    <body style="background:#f5f7fb; font-family:sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0;">
-        <form method="POST" style="background:#fff; padding:30px; border-radius:10px; box-shadow:0 4px 10px rgba(0,0,0,0.1); text-align:center;">
-            <h3>🔒 Đăng nhập hệ thống</h3>
-            <input type="password" name="password" placeholder="Nhập mật khẩu..." required style="padding:10px; width:200px; border:1px solid #ccc; border-radius:5px; margin-bottom:15px; outline:none;"><br>
-            <button type="submit" style="padding:10px 20px; border:none; background:#4f6bf6; color:#fff; font-weight:bold; border-radius:5px; cursor:pointer;">Đăng nhập</button>
-        </form>
-    </body>
-    '''
-
-@app.route("/add_user", methods=["POST"])
-def add_user():
+@app.route("/add_acc", methods=["POST"])
+def add_acc():
     if not session.get("logged_in"): return redirect(url_for("index"))
     tk = request.form.get("tk").strip().lower()
-    nhom = request.form.get("nhom")
+    owner = request.form.get("owner")
     data = doc_data()
-    if tk and tk not in data["danh_sach_nick"]:
-        data["danh_sach_nick"][tk] = {"nhom": nhom, "dem": 0}
+    if tk and tk not in data["diem"]:
+        data["diem"][tk] = 0
+        data["so_luot"][tk] = 0
+        data["quan_ly"][tk] = owner
+        data["trang_thai"][tk] = "hoat_dong"
         luu_data(data)
-        flash(f"Đã thêm {tk} vào nhóm {nhom}.")
-    return redirect(url_for("index"))
+        flash(f"Đã khai báo tài khoản '{tk}' vào hệ thống.")
+    return redirect(url_for("index", tab=owner))
 
-@app.route("/delete_user", methods=["POST"])
-def delete_user():
-    if not session.get("logged_in"): return redirect(url_for("index"))
-    tk = request.form.get("tk")
-    data = doc_data()
-    if tk in data["danh_sach_nick"]:
-        dem = data["danh_sach_nick"][tk]["dem"]
-        nhom = data["danh_sach_nick"][tk]["nhom"]
-        data["tong_he_thong"] -= dem
-        if nhom == "dien": data["tong_dien"] -= dem
-        if nhom == "hieu": data["tong_hieu"] -= dem
-        del data["danh_sach_nick"][tk]
-        luu_data(data)
-        flash(f"Đã xóa {tk}.")
-    return redirect(url_for("index"))
-
-@app.route("/reset_all", methods=["POST"])
-def reset_all():
+@app.route("/reset_fund", methods=["POST"])
+def reset_fund():
     if not session.get("logged_in"): return redirect(url_for("index"))
     data = doc_data()
-    data["tong_he_thong"] = 0
-    data["tong_dien"] = 0
-    data["tong_hieu"] = 0
-    for tk in data["danh_sach_nick"]:
-        data["danh_sach_nick"][tk]["dem"] = 0
+    field = request.form.get("field")
+    if field == "tong": data["tong_he_thong"] = 0
+    elif field == "dien": data["dien"] = 0
+    elif field == "hieu": data["hieu"] = 0
     luu_data(data)
-    flash("Đã reset toàn bộ lượt đếm về 0.")
-    return redirect(url_for("index"))
+    flash(f"Đã reset quỹ.")
+    return redirect(url_for("index", tab=request.form.get("tab")))
 
+@app.route("/batch_action", methods=["POST"])
+def batch_action():
+    if not session.get("logged_in"): return redirect(url_for("index"))
+    data = doc_data()
+    action_type = request.form.get("action_type")
+    tks = request.form.getlist("tks")
+    for tk in tks:
+        if action_type == "chuyen_dien": _set_owner(data, tk, "dien")
+        elif action_type == "chuyen_hieu": _set_owner(data, tk, "hieu")
+        elif action_type == "chuyen_chung": _set_owner(data, tk, "chung")
+        elif action_type == "reset":
+            data["diem"][tk] = 0
+            data["so_luot"][tk] = 0
+        elif action_type == "xoa":
+            data["diem"].pop(tk, None)
+            data["so_luot"].pop(tk, None)
+            data["quan_ly"].pop(tk, None)
+            data["trang_thai"].pop(tk, None)
+            data["app_names"].pop(tk, None)
+    luu_data(data)
+    flash(f"Đã xử lý {len(tks)} tài khoản.")
+    return redirect(url_for("index", tab=request.form.get("tab")))
+
+@app.route("/edit_score", methods=["POST"])
+def edit_score():
+    if not session.get("logged_in"): return redirect(url_for("index"))
+    data = doc_data()
+    tk = request.form.get("tk")
+    new_score = request.form.get("new_score")
+    if tk and new_score:
+        try:
+            new_val = int(new_score)
+            _fund_delta(data, tk, new_val - data["diem"].get(tk, 0))
+            data["diem"][tk] = new_val
+            luu_data(data)
+            flash(f"Đã lưu điểm cho {tk}.")
+        except ValueError: pass
+    return redirect(url_for("index", tab=request.form.get("tab")))
+
+@app.route("/ping")
+def ping(): return "OK"
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("index"))
 
-@app.route("/ping")
-def ping():
-    return "Bot is alive!", 200
-
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=False, use_reloader=False)
 
 threading.Thread(target=run_flask, daemon=True).start()
 
@@ -240,9 +356,7 @@ async def main():
         log.error("❌ Chưa cấu hình BOT_TOKEN")
         return
         
-    # KHOẢN MỤC ĐƯỢC SỬA: Đưa client vào trong hàm main()
     client = TelegramClient("bot_session", API_ID, API_HASH)
-    
     await client.start(bot_token=BOT_TOKEN)
     log.info("🚀 Bot Telegram đã trực chiến!")
 
@@ -251,45 +365,67 @@ async def main():
         msg_text = event.raw_text
         if not msg_text: return
         
-        # 1. Lệnh kiểm tra điểm
-        if msg_text.strip().lower() == ".check":
-            data = doc_data()
-            msg = f"📊 **THỐNG KÊ LƯỢT XUẤT HIỆN**\n\n"
-            msg += f"👑 **Nhóm Diễn:** {data['tong_dien']} lượt\n"
-            msg += f"👑 **Nhóm Hiếu:** {data['tong_hieu']} lượt\n"
-            msg += f"🌍 **Tổng Hệ Thống:** {data['tong_he_thong']} lượt\n"
+        data = doc_data()
+        
+        # --- Lệnh .check xem bảng điểm ---
+        if msg_text.strip().lower() in (".check", "check"):
+            msg = "📊 **BẢNG ĐIỂM CHI TIẾT:**\n\n"
+            team = {"dien": [], "hieu": [], "chung": []}
+            for k, v in data["diem"].items():
+                owner = data["quan_ly"].get(k, "chung")
+                team[owner].append((k, v, data["so_luot"].get(k, 0)))
+                
+            for k_team, title, icon in [("dien", "TAB DIỄN", "📘"), ("hieu", "TAB HIẾU", "📕")]:
+                if team[k_team]:
+                    msg += f"{icon} **{title}**\n"
+                    for i, (name, pts, luot) in enumerate(sorted(team[k_team], key=lambda x: x[1], reverse=True), 1):
+                        msg += f"  {i}. {name}: {pts}đ ({luot} lượt)\n"
+                    msg += "\n"
+                    
+            msg += f"----------------------------\n🌍 **TỔNG HỆ THỐNG: {data['tong_he_thong']}đ**\n"
+            msg += f"👑 **Diễn**: {data['dien']}đ | 👑 **Hiếu**: {data['hieu']}đ\n👉 {ADMIN_URL}"
             await event.reply(msg)
             return
 
-        # 2. Xử lý tin nhắn đếm số
-        words = re.findall(r'[a-zA-Z0-9_]+', msg_text.lower())
-        data = doc_data()
-        danh_sach_db = data["danh_sach_nick"]
+        # --- Phân tích tin nhắn cộng điểm / khóa nick ---
+        # Định dạng chuẩn: #sc88 anhba191 37 hoặc #sc88 anhba191 đã bị khóa
+        pattern = r'#([a-zA-Z0-9_]+)\s+([a-zA-Z0-9_]+)\s+(\d+|đã bị khóa)'
+        matches = re.findall(pattern, msg_text, re.IGNORECASE)
         
-        matched_users = {}
-        for word in words:
-            if word in danh_sach_db:
-                matched_users[word] = matched_users.get(word, 0) + 1
+        if not matches: return
 
-        if not matched_users:
-            return 
-            
         summary = []
-        for tk, times in matched_users.items():
-            nhom = danh_sach_db[tk]["nhom"]
-            
-            data["danh_sach_nick"][tk]["dem"] += times
-            data["tong_he_thong"] += times
-            if nhom == "dien":
-                data["tong_dien"] += times
-            else:
-                data["tong_hieu"] += times
+        diem_ok = False
+        
+        for m in matches:
+            app = m[0].upper()
+            tk = m[1].lower()
+            val = m[2].lower()
+
+            # QUAN TRỌNG: Chỉ xử lý nếu tk đã có trong DB
+            if tk not in data["diem"]:
+                continue
                 
-            summary.append(f"✅ Đếm `{tk}` (+{times} lượt)")
-            
-        luu_data(data)
-        reply_msg = "\n".join(summary) + f"\n\n🌍 Tổng hệ thống hiện tại: {data['tong_he_thong']} lượt."
-        await event.reply(reply_msg)
+            diem_ok = True
+            data.setdefault("app_names", {})[tk] = app
+
+            if "khóa" in val or "khoa" in val:
+                data["trang_thai"][tk] = "khoa"
+                summary.append(f"🔴 `{tk}`: Bị khóa")
+            else:
+                diem_cong = int(val)
+                data["diem"][tk] += diem_cong
+                data.setdefault("so_luot", {})[tk] = data.get("so_luot", {}).get(tk, 0) + 1
+                data["tong_he_thong"] += diem_cong
+                _fund_delta(data, tk, diem_cong)
+                data["trang_thai"][tk] = "hoat_dong"
+                
+                luot_hien_tai = data["so_luot"][tk]
+                summary.append(f"✅ `{tk}`: +{diem_cong}đ (Lượt {luot_hien_tai})")
+
+        if diem_ok:
+            luu_data(data)
+            await event.reply("\n".join(summary) + f"\n\n🌍 TỔNG HỆ THỐNG: {data['tong_he_thong']}đ")
 
     await client.run_until_disconnected()
 
