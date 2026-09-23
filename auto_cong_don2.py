@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 Hệ thống ĐẾM SỐ LẦN XUẤT HIỆN qua Telegram Bot + Web Admin.
@@ -236,13 +235,14 @@ threading.Thread(target=run_flask, daemon=True).start()
 # ==========================================
 # 🤖 PHẦN 2: BOT TELEGRAM
 # ==========================================
-client = TelegramClient("bot_session", API_ID, API_HASH)
-
 async def main():
     if not BOT_TOKEN:
         log.error("❌ Chưa cấu hình BOT_TOKEN")
         return
         
+    # KHOẢN MỤC ĐƯỢC SỬA: Đưa client vào trong hàm main()
+    client = TelegramClient("bot_session", API_ID, API_HASH)
+    
     await client.start(bot_token=BOT_TOKEN)
     log.info("🚀 Bot Telegram đã trực chiến!")
 
