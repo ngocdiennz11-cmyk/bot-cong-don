@@ -2,8 +2,9 @@
 """
 Hệ thống QUẢN LÝ ĐIỂM + ĐẾM LƯỢT qua Telegram Bot + Web Admin.
 Cập nhật:
-- Hiển thị TỔNG LƯỢT (thay vì tổng điểm) trên các bảng màu.
-- Bổ sung chức năng chỉnh sửa trực tiếp số Lượt trên giao diện Web.
+- Thêm chức năng khai báo HÀNG LOẠT nhiều tài khoản cùng lúc (cách nhau bằng dấu cách hoặc phẩy).
+- Chỉnh sửa trực tiếp TỔNG LƯỢT (Hệ thống, Diễn, Hiếu) ngay trên Web.
+- Khôi phục các lệnh Telegram cũ (.bangdiem, .rs).
 """
 
 import re
@@ -17,7 +18,7 @@ from pymongo import MongoClient
 from flask import Flask, request, render_template_string, redirect, session, url_for, flash
 
 # ==========================================
-# ⚙️ CẤU HÌNH MÔI TRƯỜNG (Lấy từ Render)
+# ⚙️ CẤU HÌNH MÔI TRƯỜNG
 # ==========================================
 API_ID = int(os.environ.get("API_ID", 38363563))
 API_HASH = os.environ.get("API_HASH", "9477629b42cefd32af155992effeab8b")
@@ -78,6 +79,17 @@ def luu_data(data):
     payload = {k: v for k, v in data.items() if k != "_id"}
     collection.update_one({"_id": MAIN_DOC_ID}, {"$set": payload}, upsert=True)
 
+# Hàm hỗ trợ tìm nhanh nick (cho lệnh .rs)
+def tim_tk(data, ten_nhap):
+    t_low = ten_nhap.strip().lower()
+    if t_low in data["diem"]:
+        return t_low, []
+    t_ns = t_low.replace(" ", "")
+    for k in data["diem"]:
+        if k.replace(" ", "") == t_ns:
+            return k, []
+    return None, []
+
 # ==========================================
 # 🌐 PHẦN 1: WEB QUẢN TRỊ (FLASK)
 # ==========================================
@@ -101,12 +113,15 @@ body{ background:var(--bg); color:var(--ink); margin:0; font-family:sans-serif; 
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:22px;}
 .stat{border-radius:var(--radius);padding:20px 22px;color:#fff;position:relative;}
 .stat small{opacity:.85;font-weight:600;font-size:12.5px;}
-.stat h2{margin:6px 0 0;font-size:28px;}
 .stat.total{background:linear-gradient(135deg,#4f6bf6,#7c3aed);}
 .stat.dien{background:linear-gradient(135deg,#0ea5e9,#0284c7);}
 .stat.hieu{background:linear-gradient(135deg,#f43f5e,#e11d48);}
-.stat-row{display:flex;align-items:flex-end;justify-content:space-between;gap:8px;}
-.stat-reset{background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);color:#fff;font-size:12px;padding:6px 11px;border-radius:8px;cursor:pointer;}
+.stat-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;}
+.stat-input{width:60px; padding:6px; border:1px solid rgba(255,255,255,0.6); border-radius:6px; background:rgba(0,0,0,0.15); color:#fff; font-size:18px; font-weight:bold; text-align:center; outline:none;}
+.stat-input:focus{background:rgba(0,0,0,0.25);}
+.stat-btn{background:rgba(255,255,255,0.25); border:1px solid rgba(255,255,255,0.5); color:#fff; padding:6px 12px; border-radius:6px; font-weight:bold; cursor:pointer;}
+.stat-btn:hover{background:rgba(255,255,255,0.4);}
+.stat-reset{background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);color:#fff;font-size:13px;font-weight:bold;padding:6px 10px;border-radius:8px;cursor:pointer;}
 .card{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);box-shadow:0 8px 24px rgba(30,40,90,.05);}
 .card-pad{padding:18px 20px;}
 .flash{padding:11px 16px;border-radius:10px;background:var(--green-bg);color:var(--green);font-weight:bold;font-size:14px;margin-bottom:16px;}
@@ -139,15 +154,51 @@ PAGE_TEMPLATE = """
   {% if get_flashed_messages() %}{% for m in get_flashed_messages() %}<div class="flash">✅ {{ m }}</div>{% endfor %}{% endif %}
 
   <div class="stats">
-    <div class="stat total"><small>🌍 TỔNG HỆ THỐNG</small><div class="stat-row"><h2>{{ data.tong_luot }} Lượt</h2>
-        <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset?');"><input type="hidden" name="field" value="tong"><input type="hidden" name="tab" value="{{ tab }}"><button class="stat-reset" type="submit">↺ Reset</button></form>
-    </div></div>
-    <div class="stat dien"><small>📘 QUỸ DIỄN</small><div class="stat-row"><h2>{{ data.luot_dien }} Lượt</h2>
-        <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset?');"><input type="hidden" name="field" value="dien"><input type="hidden" name="tab" value="{{ tab }}"><button class="stat-reset" type="submit">↺ Reset</button></form>
-    </div></div>
-    <div class="stat hieu"><small>📕 QUỸ HIẾU</small><div class="stat-row"><h2>{{ data.luot_hieu }} Lượt</h2>
-        <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset?');"><input type="hidden" name="field" value="hieu"><input type="hidden" name="tab" value="{{ tab }}"><button class="stat-reset" type="submit">↺ Reset</button></form>
-    </div></div>
+    <!-- TỔNG HỆ THỐNG -->
+    <div class="stat total"><small>🌍 TỔNG HỆ THỐNG</small>
+        <div class="stat-row">
+            <form action="{{ url_for('edit_global') }}" method="POST" style="display:flex; gap:6px; align-items:center;">
+                <input type="hidden" name="field" value="tong"><input type="hidden" name="tab" value="{{ tab }}">
+                <input type="number" name="new_val" value="{{ data.tong_luot }}" class="stat-input">
+                <span style="font-size:14px; font-weight:bold;">Lượt</span>
+                <button type="submit" class="stat-btn">Lưu</button>
+            </form>
+            <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset Tổng Hệ Thống?');">
+                <input type="hidden" name="field" value="tong"><input type="hidden" name="tab" value="{{ tab }}">
+                <button class="stat-reset" type="submit">↺</button>
+            </form>
+        </div>
+    </div>
+    <!-- QUỸ DIỄN -->
+    <div class="stat dien"><small>📘 QUỸ DIỄN</small>
+        <div class="stat-row">
+            <form action="{{ url_for('edit_global') }}" method="POST" style="display:flex; gap:6px; align-items:center;">
+                <input type="hidden" name="field" value="dien"><input type="hidden" name="tab" value="{{ tab }}">
+                <input type="number" name="new_val" value="{{ data.luot_dien }}" class="stat-input">
+                <span style="font-size:14px; font-weight:bold;">Lượt</span>
+                <button type="submit" class="stat-btn">Lưu</button>
+            </form>
+            <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset Quỹ Diễn?');">
+                <input type="hidden" name="field" value="dien"><input type="hidden" name="tab" value="{{ tab }}">
+                <button class="stat-reset" type="submit">↺</button>
+            </form>
+        </div>
+    </div>
+    <!-- QUỸ HIẾU -->
+    <div class="stat hieu"><small>📕 QUỸ HIẾU</small>
+        <div class="stat-row">
+            <form action="{{ url_for('edit_global') }}" method="POST" style="display:flex; gap:6px; align-items:center;">
+                <input type="hidden" name="field" value="hieu"><input type="hidden" name="tab" value="{{ tab }}">
+                <input type="number" name="new_val" value="{{ data.luot_hieu }}" class="stat-input">
+                <span style="font-size:14px; font-weight:bold;">Lượt</span>
+                <button type="submit" class="stat-btn">Lưu</button>
+            </form>
+            <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset Quỹ Hiếu?');">
+                <input type="hidden" name="field" value="hieu"><input type="hidden" name="tab" value="{{ tab }}">
+                <button class="stat-reset" type="submit">↺</button>
+            </form>
+        </div>
+    </div>
   </div>
 
   <div class="tabs">
@@ -159,7 +210,8 @@ PAGE_TEMPLATE = """
   <div class="card card-pad" style="margin-bottom: 18px; border-left: 5px solid var(--primary);">
     <h3 style="margin-top:0; margin-bottom:12px; font-size:16px;">➕ Khai báo tài khoản theo dõi</h3>
     <form action="{{ url_for('add_acc') }}" method="POST" style="display:flex; gap:10px; flex-wrap:wrap;">
-        <input type="text" name="tk" placeholder="Nhập tên tài khoản (VD: anhba191)..." required class="search" style="flex:1;">
+        <!-- Cập nhật ô nhập để hiển thị hướng dẫn nhập nhiều nick -->
+        <input type="text" name="tk" placeholder="Nhập tên tài khoản (VD: nick1, nick2, nick3)..." required class="search" style="flex:1;">
         <select name="owner" class="search" style="width:180px;">
             <option value="dien" {% if tab=='dien' %}selected{% endif %}>Thêm vào Quỹ Diễn</option>
             <option value="hieu" {% if tab=='hieu' %}selected{% endif %}>Thêm vào Quỹ Hiếu</option>
@@ -213,7 +265,6 @@ PAGE_TEMPLATE = """
     </form>
 
     {% for tk, diem, luot, app_name, status in rows %}
-    <!-- Form gộp dùng để lưu cả Điểm và Lượt -->
     <form id="form_{{ tk }}" action="{{ url_for('edit_data') }}" method="POST" style="display:none;">
       <input type="hidden" name="tk" value="{{ tk }}">
       <input type="hidden" name="tab" value="{{ tab }}">
@@ -237,7 +288,6 @@ def _set_owner(data, tk, new_owner):
     old_owner = data["quan_ly"].get(tk, "chung")
     if old_owner == new_owner: return
     
-    # Chuyển đổi Lượt đếm khi đổi nhóm
     luot = data["so_luot"].get(tk, 0)
     
     if old_owner == "dien": data["luot_dien"] -= luot
@@ -277,17 +327,48 @@ def index():
 @app.route("/add_acc", methods=["POST"])
 def add_acc():
     if not session.get("logged_in"): return redirect(url_for("index"))
-    tk = request.form.get("tk").strip().lower()
+    
+    # Lấy chuỗi nhập vào
+    tks_raw = request.form.get("tk", "")
     owner = request.form.get("owner")
     data = doc_data()
-    if tk and tk not in data["diem"]:
-        data["diem"][tk] = 0
-        data["so_luot"][tk] = 0
-        data["quan_ly"][tk] = owner
-        data["trang_thai"][tk] = "hoat_dong"
+    
+    # Tách chuỗi bằng dấu phẩy hoặc dấu cách nhiều lần
+    tks_list = re.split(r'[,\s]+', tks_raw)
+    added_count = 0
+    
+    for tk in tks_list:
+        tk = tk.strip().lower()
+        if tk and tk not in data["diem"]:
+            data["diem"][tk] = 0
+            data["so_luot"][tk] = 0
+            data["quan_ly"][tk] = owner
+            data["trang_thai"][tk] = "hoat_dong"
+            added_count += 1
+            
+    if added_count > 0:
         luu_data(data)
-        flash(f"Đã khai báo tài khoản '{tk}' vào hệ thống.")
+        flash(f"Đã thêm thành công {added_count} tài khoản vào hệ thống.")
+    else:
+        flash("Không có tài khoản nào được thêm mới (có thể bị rỗng hoặc đã tồn tại).")
+        
     return redirect(url_for("index", tab=owner))
+
+@app.route("/edit_global", methods=["POST"])
+def edit_global():
+    if not session.get("logged_in"): return redirect(url_for("index"))
+    data = doc_data()
+    field = request.form.get("field")
+    try:
+        new_val = int(request.form.get("new_val"))
+        if field == "tong": data["tong_luot"] = new_val
+        elif field == "dien": data["luot_dien"] = new_val
+        elif field == "hieu": data["luot_hieu"] = new_val
+        luu_data(data)
+        flash("Đã cập nhật số lượt thành công!")
+    except ValueError:
+        pass
+    return redirect(url_for("index", tab=request.form.get("tab")))
 
 @app.route("/reset_fund", methods=["POST"])
 def reset_fund():
@@ -313,7 +394,6 @@ def batch_action():
         elif action_type == "chuyen_chung": _set_owner(data, tk, "chung")
         elif action_type == "reset":
             data["diem"][tk] = 0
-            # Hoàn trả lại số lượt đã xóa vào tổng
             old_luot = data["so_luot"].get(tk, 0)
             owner = data["quan_ly"].get(tk, "chung")
             data["tong_luot"] -= old_luot
@@ -346,11 +426,9 @@ def edit_data():
     new_luot = request.form.get("new_luot")
     
     if tk:
-        # Cập nhật Điểm
         if new_score != "" and new_score is not None:
             data["diem"][tk] = int(new_score)
             
-        # Cập nhật Lượt
         if new_luot != "" and new_luot is not None:
             new_val_luot = int(new_luot)
             old_val_luot = data["so_luot"].get(tk, 0)
@@ -396,11 +474,12 @@ async def main():
     async def handler(event):
         msg_text = event.raw_text
         if not msg_text: return
+        msg_clean = msg_text.strip().lower()
         
         data = doc_data()
         
-        # --- Lệnh .check xem bảng điểm ---
-        if msg_text.strip().lower() in (".check", "check"):
+        # --- Lệnh .bangdiem / bangdiem ---
+        if msg_clean in (".bangdiem", "bangdiem"):
             msg = "📊 **BẢNG ĐIỂM & SỐ LƯỢT:**\n\n"
             team = {"dien": [], "hieu": [], "chung": []}
             for k, v in data["diem"].items():
@@ -419,6 +498,35 @@ async def main():
             await event.reply(msg)
             return
 
+        # --- Lệnh .rs / rs để Reset nhanh (VD: .rs dien, .rs hieu, .rs anhba191) ---
+        if msg_clean.startswith(".rs ") or msg_clean.startswith("rs "):
+            chuoi_ten = re.sub(r"^\.?rs\s+", "", msg_text, flags=re.IGNORECASE).strip()
+            danh_sach = chuoi_ten.split(",") if "," in chuoi_ten else chuoi_ten.split()
+            res_msg = []
+
+            for t in danh_sach:
+                t = t.strip()
+                if not t: continue
+                if t.lower() == "dien":
+                    data["luot_dien"] = 0
+                    res_msg.append("🧹 Đã reset quỹ Lượt Diễn về 0")
+                elif t.lower() == "hieu":
+                    data["luot_hieu"] = 0
+                    res_msg.append("🧹 Đã reset quỹ Lượt Hiếu về 0")
+                else:
+                    tk, _ = tim_tk(data, t)
+                    if tk:
+                        data["diem"][tk] = 0
+                        data["so_luot"][tk] = 0
+                        res_msg.append(f"🧹 Đã reset: {tk} về 0 điểm / 0 lượt")
+                    else:
+                        res_msg.append(f"❌ Không tìm thấy nick: {t}")
+
+            if res_msg:
+                luu_data(data)
+                await event.reply("\n".join(res_msg))
+            return
+
         # --- Phân tích tin nhắn cộng điểm / khóa nick ---
         pattern = r'#([a-zA-Z0-9_]+)\s+([a-zA-Z0-9_]+)\s+(\d+|đã bị khóa)'
         matches = re.findall(pattern, msg_text, re.IGNORECASE)
@@ -433,7 +541,6 @@ async def main():
             tk = m[1].lower()
             val = m[2].lower()
 
-            # QUAN TRỌNG: Chỉ xử lý nếu tk đã có trong DB
             if tk not in data["diem"]:
                 continue
                 
