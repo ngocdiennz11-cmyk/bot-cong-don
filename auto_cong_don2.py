@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 Hệ thống QUẢN LÝ ĐIỂM + ĐẾM LƯỢT qua Telegram Bot + Web Admin.
-Đặc điểm:
-- Có chia Quỹ (Diễn, Hiếu, Chung) như bản cũ.
-- Cộng điểm + Đếm số lượt xuất hiện.
-- CHỈ đọc những tài khoản đã được Thêm thủ công trên Web (Whitelist).
+Cập nhật:
+- Hiển thị TỔNG LƯỢT (thay vì tổng điểm) trên các bảng màu.
+- Bổ sung chức năng chỉnh sửa trực tiếp số Lượt trên giao diện Web.
 """
 
 import re
@@ -28,15 +27,15 @@ WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "123456")
 FLASK_SECRET = os.environ.get("FLASK_SECRET", "ngocdien_sieu_cap_bao_mat")
 ADMIN_URL = os.environ.get("ADMIN_URL", "Web Admin")
 
-MAIN_DOC_ID = "main_data"
+MAIN_DOC_ID = "main_data_v3"
 
 DEFAULT_DOC = {
     "diem": {},
-    "so_luot": {},       # Đếm số lần xuất hiện
-    "app_names": {},     # Tên trang (ví dụ: sc88)
-    "tong_he_thong": 0,
-    "dien": 0,
-    "hieu": 0,
+    "so_luot": {},       
+    "app_names": {},     
+    "tong_luot": 0,
+    "luot_dien": 0,
+    "luot_hieu": 0,
     "quan_ly": {},
     "trang_thai": {},
 }
@@ -51,7 +50,7 @@ collection = None
 try:
     if MONGO_URL:
         db_client = MongoClient(MONGO_URL, tlsCAFile=certifi.where(), tlsAllowInvalidCertificates=True)
-        collection = db_client["telegram_bot"]["diem_so_v2"]
+        collection = db_client["telegram_bot"]["diem_so_v3"]
         log.info("✅ Đã kết nối MongoDB thành công!")
     else:
         log.error("❌ Chưa cấu hình MONGO_URL")
@@ -67,9 +66,9 @@ def doc_data():
         "diem": doc.get("diem", {}),
         "so_luot": doc.get("so_luot", {}),
         "app_names": doc.get("app_names", {}),
-        "tong_he_thong": doc.get("tong_he_thong", 0),
-        "dien": doc.get("dien", 0),
-        "hieu": doc.get("hieu", 0),
+        "tong_luot": doc.get("tong_luot", 0),
+        "luot_dien": doc.get("luot_dien", 0),
+        "luot_hieu": doc.get("luot_hieu", 0),
         "quan_ly": doc.get("quan_ly", {}),
         "trang_thai": doc.get("trang_thai", {}),
     }
@@ -127,7 +126,8 @@ tbody td{padding:11px 12px;border-bottom:1px solid var(--border);}
 .tag-off{color:var(--red);font-weight:bold;font-size:13px;}
 .badge{background:#eef1f8;color:#4b5570;font-size:12px;font-weight:bold;padding:4px 8px;border-radius:6px;}
 .score-cell{display:flex;gap:6px;align-items:center;}
-.score-cell input{width:80px;padding:7px;border:1px solid var(--border);border-radius:8px;}
+.score-cell input{width:75px;padding:7px;border:1px solid var(--border);border-radius:8px; font-weight:bold; text-align:center;}
+.luot-input{color: var(--primary);}
 .save-btn{background:var(--primary);color:#fff;border:none;border-radius:8px;padding:8px 12px;font-weight:bold;cursor:pointer;}
 """
 
@@ -139,13 +139,13 @@ PAGE_TEMPLATE = """
   {% if get_flashed_messages() %}{% for m in get_flashed_messages() %}<div class="flash">✅ {{ m }}</div>{% endfor %}{% endif %}
 
   <div class="stats">
-    <div class="stat total"><small>🌍 TỔNG HỆ THỐNG</small><div class="stat-row"><h2>{{ data.tong_he_thong }} đ</h2>
+    <div class="stat total"><small>🌍 TỔNG HỆ THỐNG</small><div class="stat-row"><h2>{{ data.tong_luot }} Lượt</h2>
         <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset?');"><input type="hidden" name="field" value="tong"><input type="hidden" name="tab" value="{{ tab }}"><button class="stat-reset" type="submit">↺ Reset</button></form>
     </div></div>
-    <div class="stat dien"><small>📘 QUỸ DIỄN</small><div class="stat-row"><h2>{{ data.dien }} đ</h2>
+    <div class="stat dien"><small>📘 QUỸ DIỄN</small><div class="stat-row"><h2>{{ data.luot_dien }} Lượt</h2>
         <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset?');"><input type="hidden" name="field" value="dien"><input type="hidden" name="tab" value="{{ tab }}"><button class="stat-reset" type="submit">↺ Reset</button></form>
     </div></div>
-    <div class="stat hieu"><small>📕 QUỸ HIẾU</small><div class="stat-row"><h2>{{ data.hieu }} đ</h2>
+    <div class="stat hieu"><small>📕 QUỸ HIẾU</small><div class="stat-row"><h2>{{ data.luot_hieu }} Lượt</h2>
         <form action="{{ url_for('reset_fund') }}" method="POST" onsubmit="return confirm('Reset?');"><input type="hidden" name="field" value="hieu"><input type="hidden" name="tab" value="{{ tab }}"><button class="stat-reset" type="submit">↺ Reset</button></form>
     </div></div>
   </div>
@@ -156,7 +156,6 @@ PAGE_TEMPLATE = """
     <a href="{{ url_for('index', tab='chung') }}" class="{{ 'active' if tab=='chung' else '' }}">Danh Sách Chung</a>
   </div>
 
-  <!-- FORM THÊM TÀI KHOẢN MỚI -->
   <div class="card card-pad" style="margin-bottom: 18px; border-left: 5px solid var(--primary);">
     <h3 style="margin-top:0; margin-bottom:12px; font-size:16px;">➕ Khai báo tài khoản theo dõi</h3>
     <form action="{{ url_for('add_acc') }}" method="POST" style="display:flex; gap:10px; flex-wrap:wrap;">
@@ -179,7 +178,7 @@ PAGE_TEMPLATE = """
         <button class="b-dien" type="submit" name="action_type" value="chuyen_dien">➡️ Chuyển Diễn</button>
         <button class="b-hieu" type="submit" name="action_type" value="chuyen_hieu">➡️ Chuyển Hiếu</button>
         <button class="b-chung" type="submit" name="action_type" value="chuyen_chung">↩️ Rút về Chung</button>
-        <button class="b-reset" type="submit" name="action_type" value="reset" onclick="return confirm('Reset điểm?');">🧹 Reset điểm</button>
+        <button class="b-reset" type="submit" name="action_type" value="reset" onclick="return confirm('Reset Điểm & Lượt?');">🧹 Reset Điểm & Lượt</button>
         <button class="b-xoa" type="submit" name="action_type" value="xoa" onclick="return confirm('Xóa vĩnh viễn?');">🗑️ Xóa</button>
       </div>
       <table id="accTable">
@@ -196,9 +195,13 @@ PAGE_TEMPLATE = """
             <td>{% if status == 'khoa' %}<span class="tag-off">Bị khóa</span>{% else %}<span class="tag-on">Hoạt động</span>{% endif %}</td>
             <td style="font-weight:bold;">{{ tk }}</td>
             <td><span class="badge">{{ app_name }}</span></td>
-            <td style="color:var(--primary); font-weight:bold; font-size:16px;">{{ luot }}</td>
+            <td>
+                <!-- Ô Nhập Lượt -->
+                <input type="number" form="form_{{ tk }}" name="new_luot" value="{{ luot }}" class="luot-input" style="width:60px; padding:7px; border:1px solid var(--border); border-radius:8px; font-weight:bold; text-align:center;">
+            </td>
             <td>
               <div class="score-cell">
+                <!-- Ô Nhập Điểm -->
                 <input type="number" form="form_{{ tk }}" name="new_score" value="{{ diem }}">
                 <button class="save-btn" type="submit" form="form_{{ tk }}">Lưu</button>
               </div>
@@ -210,8 +213,10 @@ PAGE_TEMPLATE = """
     </form>
 
     {% for tk, diem, luot, app_name, status in rows %}
-    <form id="form_{{ tk }}" action="{{ url_for('edit_score') }}" method="POST" style="display:none;">
-      <input type="hidden" name="tk" value="{{ tk }}"><input type="hidden" name="tab" value="{{ tab }}">
+    <!-- Form gộp dùng để lưu cả Điểm và Lượt -->
+    <form id="form_{{ tk }}" action="{{ url_for('edit_data') }}" method="POST" style="display:none;">
+      <input type="hidden" name="tk" value="{{ tk }}">
+      <input type="hidden" name="tab" value="{{ tab }}">
     </form>
     {% endfor %}
   </div>
@@ -228,20 +233,19 @@ function filterSearch(){
 </body></html>
 """
 
-def _fund_delta(data, tk, delta):
-    if delta <= 0: return
-    owner = data["quan_ly"].get(tk, "chung")
-    if owner == "dien": data["dien"] = data.get("dien", 0) + delta
-    elif owner == "hieu": data["hieu"] = data.get("hieu", 0) + delta
-
 def _set_owner(data, tk, new_owner):
     old_owner = data["quan_ly"].get(tk, "chung")
     if old_owner == new_owner: return
-    diem = data["diem"].get(tk, 0)
-    if old_owner == "dien": data["dien"] -= diem
-    elif old_owner == "hieu": data["hieu"] -= diem
-    if new_owner == "dien": data["dien"] += diem
-    elif new_owner == "hieu": data["hieu"] += diem
+    
+    # Chuyển đổi Lượt đếm khi đổi nhóm
+    luot = data["so_luot"].get(tk, 0)
+    
+    if old_owner == "dien": data["luot_dien"] -= luot
+    elif old_owner == "hieu": data["luot_hieu"] -= luot
+    
+    if new_owner == "dien": data["luot_dien"] += luot
+    elif new_owner == "hieu": data["luot_hieu"] += luot
+    
     if new_owner == "chung": data["quan_ly"].pop(tk, None)
     else: data["quan_ly"][tk] = new_owner
 
@@ -290,11 +294,11 @@ def reset_fund():
     if not session.get("logged_in"): return redirect(url_for("index"))
     data = doc_data()
     field = request.form.get("field")
-    if field == "tong": data["tong_he_thong"] = 0
-    elif field == "dien": data["dien"] = 0
-    elif field == "hieu": data["hieu"] = 0
+    if field == "tong": data["tong_luot"] = 0
+    elif field == "dien": data["luot_dien"] = 0
+    elif field == "hieu": data["luot_hieu"] = 0
     luu_data(data)
-    flash(f"Đã reset quỹ.")
+    flash(f"Đã reset số lượt.")
     return redirect(url_for("index", tab=request.form.get("tab")))
 
 @app.route("/batch_action", methods=["POST"])
@@ -309,8 +313,21 @@ def batch_action():
         elif action_type == "chuyen_chung": _set_owner(data, tk, "chung")
         elif action_type == "reset":
             data["diem"][tk] = 0
+            # Hoàn trả lại số lượt đã xóa vào tổng
+            old_luot = data["so_luot"].get(tk, 0)
+            owner = data["quan_ly"].get(tk, "chung")
+            data["tong_luot"] -= old_luot
+            if owner == "dien": data["luot_dien"] -= old_luot
+            elif owner == "hieu": data["luot_hieu"] -= old_luot
             data["so_luot"][tk] = 0
+            
         elif action_type == "xoa":
+            old_luot = data["so_luot"].get(tk, 0)
+            owner = data["quan_ly"].get(tk, "chung")
+            data["tong_luot"] -= old_luot
+            if owner == "dien": data["luot_dien"] -= old_luot
+            elif owner == "hieu": data["luot_hieu"] -= old_luot
+            
             data["diem"].pop(tk, None)
             data["so_luot"].pop(tk, None)
             data["quan_ly"].pop(tk, None)
@@ -320,20 +337,35 @@ def batch_action():
     flash(f"Đã xử lý {len(tks)} tài khoản.")
     return redirect(url_for("index", tab=request.form.get("tab")))
 
-@app.route("/edit_score", methods=["POST"])
-def edit_score():
+@app.route("/edit_data", methods=["POST"])
+def edit_data():
     if not session.get("logged_in"): return redirect(url_for("index"))
     data = doc_data()
     tk = request.form.get("tk")
     new_score = request.form.get("new_score")
-    if tk and new_score:
-        try:
-            new_val = int(new_score)
-            _fund_delta(data, tk, new_val - data["diem"].get(tk, 0))
-            data["diem"][tk] = new_val
-            luu_data(data)
-            flash(f"Đã lưu điểm cho {tk}.")
-        except ValueError: pass
+    new_luot = request.form.get("new_luot")
+    
+    if tk:
+        # Cập nhật Điểm
+        if new_score != "" and new_score is not None:
+            data["diem"][tk] = int(new_score)
+            
+        # Cập nhật Lượt
+        if new_luot != "" and new_luot is not None:
+            new_val_luot = int(new_luot)
+            old_val_luot = data["so_luot"].get(tk, 0)
+            delta_luot = new_val_luot - old_val_luot
+            
+            data["so_luot"][tk] = new_val_luot
+            data["tong_luot"] += delta_luot
+            
+            owner = data["quan_ly"].get(tk, "chung")
+            if owner == "dien": data["luot_dien"] += delta_luot
+            elif owner == "hieu": data["luot_hieu"] += delta_luot
+
+        luu_data(data)
+        flash(f"Đã lưu dữ liệu cho {tk}.")
+        
     return redirect(url_for("index", tab=request.form.get("tab")))
 
 @app.route("/ping")
@@ -369,7 +401,7 @@ async def main():
         
         # --- Lệnh .check xem bảng điểm ---
         if msg_text.strip().lower() in (".check", "check"):
-            msg = "📊 **BẢNG ĐIỂM CHI TIẾT:**\n\n"
+            msg = "📊 **BẢNG ĐIỂM & SỐ LƯỢT:**\n\n"
             team = {"dien": [], "hieu": [], "chung": []}
             for k, v in data["diem"].items():
                 owner = data["quan_ly"].get(k, "chung")
@@ -382,13 +414,12 @@ async def main():
                         msg += f"  {i}. {name}: {pts}đ ({luot} lượt)\n"
                     msg += "\n"
                     
-            msg += f"----------------------------\n🌍 **TỔNG HỆ THỐNG: {data['tong_he_thong']}đ**\n"
-            msg += f"👑 **Diễn**: {data['dien']}đ | 👑 **Hiếu**: {data['hieu']}đ\n👉 {ADMIN_URL}"
+            msg += f"----------------------------\n🌍 **TỔNG LƯỢT HỆ THỐNG: {data['tong_luot']}**\n"
+            msg += f"👑 **Diễn**: {data['luot_dien']} lượt | 👑 **Hiếu**: {data['luot_hieu']} lượt\n👉 {ADMIN_URL}"
             await event.reply(msg)
             return
 
         # --- Phân tích tin nhắn cộng điểm / khóa nick ---
-        # Định dạng chuẩn: #sc88 anhba191 37 hoặc #sc88 anhba191 đã bị khóa
         pattern = r'#([a-zA-Z0-9_]+)\s+([a-zA-Z0-9_]+)\s+(\d+|đã bị khóa)'
         matches = re.findall(pattern, msg_text, re.IGNORECASE)
         
@@ -415,9 +446,14 @@ async def main():
             else:
                 diem_cong = int(val)
                 data["diem"][tk] += diem_cong
+                
+                # Cập nhật số Lượt
                 data.setdefault("so_luot", {})[tk] = data.get("so_luot", {}).get(tk, 0) + 1
-                data["tong_he_thong"] += diem_cong
-                _fund_delta(data, tk, diem_cong)
+                data["tong_luot"] += 1
+                owner = data["quan_ly"].get(tk, "chung")
+                if owner == "dien": data["luot_dien"] += 1
+                elif owner == "hieu": data["luot_hieu"] += 1
+                
                 data["trang_thai"][tk] = "hoat_dong"
                 
                 luot_hien_tai = data["so_luot"][tk]
@@ -425,7 +461,7 @@ async def main():
 
         if diem_ok:
             luu_data(data)
-            await event.reply("\n".join(summary) + f"\n\n🌍 TỔNG HỆ THỐNG: {data['tong_he_thong']}đ")
+            await event.reply("\n".join(summary) + f"\n\n🌍 TỔNG SỐ LƯỢT HỆ THỐNG: {data['tong_luot']}")
 
     await client.run_until_disconnected()
 
